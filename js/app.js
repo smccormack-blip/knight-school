@@ -350,11 +350,13 @@ function settingsDialog() {
 
 // ------------------------------------------------------------------ start-up
 function firstTouch() {
-  audio.unlockSounds();
   audio.unlockSpeech();
   document.removeEventListener("pointerdown", firstTouch, true);
   document.removeEventListener("keydown", firstTouch, true);
 }
+// every tap also wakes the sound up again (iPhones put it to sleep when the screen locks)
+document.addEventListener("pointerdown", () => audio.unlockSounds(), true);
+document.addEventListener("keydown", () => audio.unlockSounds(), true);
 
 async function boot() {
   const s = store.settings();

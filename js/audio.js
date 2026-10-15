@@ -115,8 +115,15 @@ let soundOn = true;
 
 export function setSoundOn(on) { soundOn = on; }
 
+// Call from a tap: starts the sound system, or wakes it up again. (iPhones stop it when the
+// screen locks or the app goes to the background, and only a tap can restart it.)
 export function unlockSounds() {
   try {
+    // let the narration play even when the iPhone's ring/silent switch is on silent
+    if (navigator.audioSession && navigator.audioSession.type !== "playback") navigator.audioSession.type = "playback";
+  } catch (_) { /* older iPhones */ }
+  try {
+    if (ctx && ctx.state === "closed") ctx = null;
     if (!ctx) {
       const AC = window.AudioContext || window.webkitAudioContext;
       if (!AC) return;
@@ -127,8 +134,17 @@ export function unlockSounds() {
           .then((b) => { buffers[name] = b; }).catch(() => {});
       }
     }
-    if (ctx.state === "suspended") ctx.resume();
+    if (ctx.state !== "running") ctx.resume().catch(() => {});
   } catch (_) { /* no sound, that's all right */ }
+}
+
+// Is the sound system able to play right now? Tries to wake it (works if called during a tap).
+async function soundReady(ms = 700) {
+  if (!ctx) unlockSounds();
+  if (!ctx) return false;
+  if (ctx.state === "running") return true;
+  try { await Promise.race([ctx.resume(), new Promise((r) => setTimeout(r, ms))]); } catch (_) { /* still asleep */ }
+  return ctx.state === "running";
 }
 
 export function play(name, volume = 0.6) {
@@ -216,7 +232,8 @@ function stopRecording() {
   }
 }
 
-// Play one sentence's recording. Resolves "ended", "cancelled", or "failed" (no file / can't play).
+// Play one sentence's recording. Resolves "ended", "cancelled", "failed" (no file), or
+// "blocked" (the phone has put sound to sleep; it needs a tap to wake it).
 export async function playRecording(url) {
   stopRecording();
   if (synth && (synth.speaking || synth.pending)) synth.cancel();
@@ -225,16 +242,29 @@ export async function playRecording(url) {
   try {
     if (!ctx) unlockSounds();
     if (!ctx) return "failed";
-    if (ctx.state === "suspended") await ctx.resume();
     buf = await decode(url);
   } catch (_) { return gen === recGen ? "failed" : "cancelled"; }
+  if (gen !== recGen) return "cancelled";
+  if (!(await soundReady())) return gen === recGen ? "blocked" : "cancelled";
   if (gen !== recGen) return "cancelled";
   return new Promise((resolve) => {
     const src = ctx.createBufferSource();
     src.buffer = buf;
     src.connect(ctx.destination);
-    const me = { src, resolve };
-    src.onended = () => { if (playing === me) { playing = null; resolve("ended"); } };
+    let guard = null;
+    const finish = (how) => {
+      clearTimeout(guard);
+      if (playing === me) { playing = null; resolve(how); }
+    };
+    const me = { src, resolve: (how) => { clearTimeout(guard); resolve(how); } };
+    src.onended = () => finish(ctx.state === "running" ? "ended" : "blocked");
+    // if the phone puts sound to sleep mid-sentence, "ended" never comes: check now and then
+    const watch = () => {
+      if (playing !== me) return;
+      if (ctx.state !== "running") { try { src.onended = null; src.stop(); } catch (_) { /* fine */ } finish("blocked"); return; }
+      guard = setTimeout(watch, 500);
+    };
+    guard = setTimeout(watch, 500);
     playing = me;
     // the stand-in for "current" so stopSpeaking() cancels this too
     current = { __resolve: () => stopRecording() };
@@ -246,7 +276,7 @@ export async function playRecording(url) {
 export async function narrate(text, url) {
   if (url) {
     const how = await playRecording(url);
-    if (how !== "failed") return how;
+    if (how !== "failed") return how;     // ("blocked": the lesson waits for a tap, same voice)
   }
   return speak(text);
 }
@@ -309,3 +339,4 @@ export async function savedCounts() {
   return out;
 }
 export const sectionFolder = (section) => (manifest && manifest.sections && manifest.sections[section] || {}).folder;
+export const _ctxForTests = () => ctx;

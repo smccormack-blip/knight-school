@@ -1,7 +1,7 @@
 // Knight School offline helper (made by tools/build_sw.py - don't edit by hand).
 // Keeps a copy of the whole app and all the lessons on the device, so it works
 // without the internet after the first visit.
-const VERSION = "5f3d95224ba9";
+const VERSION = "ea93c92e367e";
 const CACHE = "knight-school-" + VERSION;
 const FILES = [
  "css/app.css",

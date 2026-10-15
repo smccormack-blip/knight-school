@@ -102,6 +102,11 @@ export class Lesson {
     document.addEventListener("keydown", this.keys);
     this.resize = () => this.fitBoard();
     window.addEventListener("resize", this.resize);
+    // phone locked or app switched: pause, so it picks up where it left off with a tap on Play
+    this.hidden = () => {
+      if (document.visibilityState === "hidden" && this.narr && this.narr.playing && !this.narr.paused) this.togglePause();
+    };
+    document.addEventListener("visibilitychange", this.hidden);
     this.drawBadge(this.mode === "learn" ? this.progress.points : 0);
   }
 
@@ -116,6 +121,7 @@ export class Lesson {
     this.loadGen++;
     document.removeEventListener("keydown", this.keys);
     window.removeEventListener("resize", this.resize);
+    document.removeEventListener("visibilitychange", this.hidden);
     this.el.remove();
   }
 
@@ -539,6 +545,15 @@ export class Lesson {
     if (i + 1 < segs.length) audio.preloadRecording(audio.recordingUrl(this.pos.section, segs[i + 1].au));
     const how = await audio.narrate(segs[i].say, url);
     if (gen !== this.narrGen || !this.narr) return;
+    if (how === "blocked") {
+      // the phone put the sound to sleep (screen locked, app switched): wait for a tap on Play
+      this.narr.paused = true;
+      this.narr.resumeAt = i;
+      this.showNarrControls();
+      this.narrLbl.textContent = "Tap ▶ Play to keep listening";
+      this.say("Tap ▶ Play to keep listening!");
+      return;
+    }
     if (how === "cancelled" || this.narr.paused) { this.narr.resumeAt = i; return; }
     this.afterSeg(i, gen);
   }
@@ -586,6 +601,7 @@ export class Lesson {
       this.timer = null;
       audio.stopSpeaking();
     } else {
+      audio.unlockSounds();          // this is a tap, so the phone lets the sound wake up again
       n.paused = false;
       if (n.resumeAt != null) {
         const i = n.resumeAt;
