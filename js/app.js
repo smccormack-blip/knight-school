@@ -1,5 +1,5 @@
 // Knight School on the web: the screens (players, home, lessons list, credits) and start-up.
-import { course, loadCourse } from "./course.js";
+import { course, loadCourse, sectionRecordings } from "./course.js";
 import * as store from "./store.js";
 import { Progress, RANKS, rankOf, AVATARS, DEV_PASSWORD } from "./store.js";
 import { readCode, CodeError } from "./progress_code.js";
@@ -237,6 +237,7 @@ function sectionsScreen() {
   body.append(h("button.btn.big.good.keep-going", { onclick: () => app.show("learn", { index: app.resumeIndex() }) },
     `▶ Keep going: ${here.sectionTitle}, Figure ${here.fig}`));
   let chapter = null;
+  const savedMarks = [];
   for (const sec of course.sections) {
     if (sec.chapter !== chapter) {
       chapter = sec.chapter;
@@ -246,11 +247,20 @@ function sectionsScreen() {
     const puzzles = pages.filter((p) => p.playable);
     const stars = puzzles.filter((p) => prog.solved(p.fig)).length;
     const open = sec.first <= reached;
+    const saved = h("span.saved");
+    savedMarks.push([sec.section, saved]);
     body.append(h("button.section-btn" + (open ? "" : ".locked"), {
       disabled: !open, onclick: () => app.show("learn", { index: app.resumeIndex(sec.section) }),
-    }, h("span.num", (open ? "" : "🔒 ") + sec.section), h("span.name", sec.title),
+    }, h("span.num", (open ? "" : "🔒 ") + sec.section), h("span.name", sec.title, saved),
     h("span.stars", `★ ${stars} of ${puzzles.length}`)));
   }
+  // which lessons' narration is already saved on this device (works offline)
+  audio.savedCounts().then((counts) => {
+    for (const [section, el] of savedMarks) {
+      const total = audio.sectionFileCount(section);
+      if (total && (counts[audio.sectionFolder(section)] || 0) >= total) el.textContent = " 🔊 saved";
+    }
+  });
   return h("div.screen.sections-screen",
     h("header.bar", h("button.btn.small.home", { onclick: () => app.show("home"), "aria-label": "Home" }, "⌂"),
       h("div.bar-title.big", "Choose a lesson")),
@@ -299,15 +309,42 @@ function settingsDialog() {
   const snd = h("input", { type: "checkbox" });
   snd.checked = s.sound;
   snd.onchange = () => { audio.setSoundOn(snd.checked); store.saveSettings({ sound: snd.checked }); };
+  // Narrator: the recorded voice from the Windows program, or this device's own voice
+  const uploaded = audio.recordingsUploaded();
+  const narrator = h("select.voice",
+    h("option", { value: "recorded", disabled: !uploaded }, "Recorded (same as Windows)"),
+    h("option", { value: "device" }, "This device's voice"));
+  narrator.value = uploaded && s.recorded !== false ? "recorded" : "device";
+  const deviceRows = h("div",
+    h("label.set-row", h("span", "Device voice"), sel),
+    h("label.set-row", h("span", "Speed"), rate, rateLbl),
+    !audio.speechAvailable() ? h("p.msg", "This browser can't speak, so the narration will be shown but not read aloud.") : null,
+    h("p.soft.small", "Tip: for the nicest device voice on an iPhone or iPad, download an \u201cEnhanced\u201d English voice in the Settings app (Accessibility \u203a Spoken Content \u203a Voices)."));
+  const showRows = () => deviceRows.classList.toggle("hidden", narrator.value === "recorded");
+  narrator.onchange = () => {
+    const rec = narrator.value === "recorded";
+    audio.setUseRecorded(rec);
+    store.saveSettings({ recorded: rec });
+    showRows();
+  };
+  showRows();
+  const test = async () => {
+    audio.stopSpeaking();
+    if (narrator.value === "recorded") {
+      const names = await sectionRecordings("2.1").catch(() => []);
+      return audio.narrate("We begin our study of tactics with double attacks.", audio.recordingUrl("2.1", names[0]));
+    }
+    return audio.speak("Watch the board: the knight forks the king and the rook!");
+  };
   const m = modal([
     h("h2", "Settings"),
-    h("label.set-row", h("span", "Voice"), sel),
-    h("label.set-row", h("span", "Speed"), rate, rateLbl),
-    h("div.row.center", h("button.btn.small.purple", { onclick: () => audio.speak("Watch the board: the knight forks the king and the rook!") }, "▶ Test the voice")),
+    h("label.set-row", h("span", "Narrator"), narrator),
+    deviceRows,
+    h("div.row.center", h("button.btn.small.purple", { onclick: test }, "\u25b6 Test the voice")),
     h("label.set-row", h("span", "Sound effects"), snd),
-    !audio.speechAvailable() ? h("p.msg", "This browser can't speak, so the narration will be shown but not read aloud.") : null,
-    h("p.soft.small", "Tip: for the nicest voice on an iPhone or iPad, download an “Enhanced” English voice in the Settings app (Accessibility › Spoken Content › Voices). On Android, Google's voices work well."),
-    h("div.row.center", h("button.btn.grey", { onclick: () => m.close() }, "Close")),
+    uploaded ? h("p.soft.small", "Each lesson's narration (and the next lesson's) is saved on this device when you open it, so it works without the internet.")
+      : h("p.soft.small", "The Windows program's recorded voice hasn't been uploaded to the web site yet."),
+    h("div.row.center", h("button.btn.grey", { onclick: () => { audio.stopSpeaking(); m.close(); } }, "Close")),
   ]);
 }
 
@@ -327,8 +364,9 @@ async function boot() {
   if (window.speechSynthesis) window.speechSynthesis.addEventListener?.("voiceschanged", () => audio.setVoice(store.settings().voice));
   document.addEventListener("pointerdown", firstTouch, true);
   document.addEventListener("keydown", firstTouch, true);
+  audio.setUseRecorded(s.recorded !== false);
   try {
-    await loadCourse();
+    await Promise.all([loadCourse(), audio.loadManifest()]);
   } catch (e) {
     root.replaceChildren(h("div.screen.players", h("h1.title", "Knight School"),
       h("p.sub", "Couldn't load the lessons. Check the internet connection and reload the page.")));

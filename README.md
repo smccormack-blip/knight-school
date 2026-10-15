@@ -26,9 +26,24 @@ opened for a few weeks, but not of Home Screen apps.
 
 ## The voice
 
-The narration uses the device's own text-to-speech voice. Pick a voice and speed with the ⚙
-button. On iPhone/iPad, an "Enhanced" English voice (Settings › Accessibility › Spoken
-Content › Voices) sounds much better.
+The narration uses the same recorded voice as the Windows program, once the recordings are
+uploaded (below). Each lesson's narration, and the next lesson's, is saved on the device when the
+lesson is opened, so it plays offline; "🔊 saved" on the lesson list shows which ones are saved.
+Any sentence without a recording (or before the upload) uses the device's own voice; the ⚙ button
+can also switch to the device's voice.
+
+### Uploading the recordings (one time, from the Windows computer)
+
+1. In the KnightSchool folder, run `build.bat` (if you haven't since the narration fix), then
+   double-click `make_web_audio.bat`. It makes a `knight-school-audio` folder on the desktop
+   with an `audio` folder inside (about 350 MB; the first run takes a while).
+2. Install GitHub Desktop (https://desktop.github.com), sign in, and choose
+   File › Clone repository › `smccormack-blip/knight-school`.
+3. Copy the `audio` folder into the cloned `knight-school` folder (next to `index.html`).
+4. In GitHub Desktop: type a summary such as "Add narration", click **Commit to main**, then
+   **Push origin**. The upload takes a while; the site updates a few minutes after it finishes.
+
+Run `make_web_audio.bat` and repeat steps 3–4 whenever new lessons are added.
 
 ## For grown-ups
 

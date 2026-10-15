@@ -4,7 +4,7 @@ import { Board } from "./board.js";
 import { applyToken, fromFen, toFen, playMove, parseSq, sqName, placementKey, forkTargets } from "./model.js";
 import { Chess } from "./chess.js";
 import * as audio from "./audio.js";
-import { course, page, prefetch } from "./course.js";
+import { course, page, prefetch, sectionRecordings } from "./course.js";
 import { RANKS, rankIndex, rankOf, puzzlePoints } from "./store.js";
 import { h, badge, ask } from "./ui.js";
 
@@ -54,7 +54,7 @@ export class Lesson {
       h("main.lesson-main",
         this.boardWrap = h("div.board-wrap", this.boardEl = h("div")),
         h("div.panel",
-          h("div.counter-row", this.counterEl = h("div.counter"), this.statusEl = h("div.status")),
+          h("div.counter-row", this.counterEl = h("div.counter"), this.statusEl = h("div.status"), this.dlEl = h("div.dl")),
           h("div.say", h("img", { src: "img/pieces/wN.png", alt: "" }), this.sayEl = h("span")),
           this.tools = h("div.tools",
             this.explainBtn = h("button.btn.small.purple", { onclick: () => this.reveal() }, q ? "Show answer" : "Explain"),
@@ -169,6 +169,7 @@ export class Lesson {
     if (gen !== this.loadGen) return;
     prefetch(idx + 1);
     this.pos = pos;
+    if (this.mode === "learn") this.saveVoiceAhead(pos.section);
     this.revealed = false;
     this.solvedNow = false;
     this.hints = 0;
@@ -204,6 +205,23 @@ export class Lesson {
       if (this.segments().length) {
         setTimeout(() => { if (this.loadGen === gen && !this.narr) this.startNarration(); }, 500);
       } else this.completePage();
+    }
+  }
+
+  // Save this lesson's narration and the next lesson's on the device, so they work offline.
+  async saveVoiceAhead(section) {
+    if (!audio.usingRecorded()) return;
+    const k = course.sections.findIndex((s) => s.section === section);
+    const secs = [course.sections[k], course.sections[k + 1]].filter(Boolean).map((s) => s.section);
+    for (const sec of secs) {
+      try {
+        const names = await sectionRecordings(sec);
+        await audio.saveSection(sec, names, (done, total) => {
+          if (!this.el.isConnected) return;
+          this.dlEl.textContent = done < total ? `⬇ Saving the voice for ${sec}… ${Math.floor((done / total) * 100)}%` : "";
+        });
+      } catch (_) { /* offline: try again next time */ }
+      if (this.el.isConnected) this.dlEl.textContent = "";
     }
   }
 
@@ -517,7 +535,9 @@ export class Lesson {
     if (this.mode === "learn") this.progress.noteListened(this.pos.fig, i);
     if (this.scrubLimit() !== before || this.scrub.classList.contains("hidden")) this.showNarrControls();
     this.highlight(i);
-    const how = await audio.speak(segs[i].say);
+    const url = audio.recordingUrl(this.pos.section, segs[i].au);
+    if (i + 1 < segs.length) audio.preloadRecording(audio.recordingUrl(this.pos.section, segs[i + 1].au));
+    const how = await audio.narrate(segs[i].say, url);
     if (gen !== this.narrGen || !this.narr) return;
     if (how === "cancelled" || this.narr.paused) { this.narr.resumeAt = i; return; }
     this.afterSeg(i, gen);

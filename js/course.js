@@ -57,3 +57,13 @@ export function prefetch(i) {
   const p = course.flat[i];
   if (p) sectionData(p.file).catch(() => {});
 }
+
+// The recording names used anywhere in a section (for saving its narration ahead of time).
+export async function sectionRecordings(section) {
+  const sec = course.sections.find((s) => s.section === section);
+  if (!sec) return [];
+  const d = await sectionData(sec.file);
+  const names = [];
+  for (const t of d.topics) for (const p of t.positions) for (const s of p.segments || []) if (s.au) names.push(s.au);
+  return names;
+}

@@ -5,10 +5,19 @@
 Writes data/index.json (the list of sections) and data/s_X_Y.json (one per section),
 keeping only what the web app uses. The first folder that has a section wins.
 """
-import glob, json, os, re, sys
+import glob, hashlib, json, os, re, sys
 
 KEEP = ("fig", "side", "fen", "flipped", "marks", "solution", "alts", "paragraphs", "lines",
         "segments", "display_only", "read_only")
+# The Windows program's narration voice; recordings are named from these and the sentence
+# (annotate.audio_name), and make_web_audio.py uploads them under audio/<section>/<name>.mp3.
+VOICE, RATE = "en-US-BrianNeural", "-10%"
+
+
+def audio_name(say):
+    return hashlib.sha1(("%s|%s|%s" % (VOICE, RATE, say)).encode("utf-8")).hexdigest()[:16]
+
+
 CHAPTERS = {"2": "The Double Attack", "3": "The Discovered Attack", "4": "The Pin and the Skewer",
             "5": "Removing the Guard", "6": "Mating Patterns"}
 
@@ -36,6 +45,7 @@ def main(folders):
                     q["forks"] = forks
                 for s in q.get("segments", []):
                     s.pop("audio", None)
+                    s["au"] = audio_name(s["say"])
                 ps.append(q)
             topics.append({"title": t["title"].rstrip("."), "positions": ps})
         name = "s_%d_%d.json" % k

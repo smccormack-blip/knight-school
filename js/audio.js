@@ -91,8 +91,10 @@ export function speak(text) {
 export function stopSpeaking() {
   const c = current;
   current = null;
-  if (synth) synth.cancel();
+  if (synth && (synth.speaking || synth.pending)) synth.cancel();
   if (c && c.__resolve) c.__resolve("cancelled");
+  recGen++;
+  stopRecording();
 }
 
 // iPhones and iPads only allow speech after the first tap; say nothing on that tap.
@@ -140,3 +142,170 @@ export function play(name, volume = 0.6) {
     src.start();
   } catch (_) { /* ignore */ }
 }
+
+// ---------------------------------------------------------------- recorded narration
+// The Windows program's recordings ("Brian"), uploaded by make_web_audio.py to
+// audio/<section>/<name>.mp3. Files are kept in their own cache so lessons work offline.
+const AUDIO_CACHE = "ks-audio-1";
+let manifest = null;              // audio/manifest.json, or null if not uploaded
+let useRecorded = true;
+let playing = null;               // {src, resolve}
+let recGen = 0;                   // bumps on every stop, so a late-loading file isn't played
+const decoded = new Map();        // url -> Promise<AudioBuffer> (a few, for the next sentence)
+
+export async function loadManifest() {
+  try {
+    const r = await fetch("audio/manifest.json", { cache: "no-cache" });
+    if (r.ok) manifest = await r.json();
+  } catch (_) {
+    try {   // offline: use the copy saved last time
+      const c = await caches.open(AUDIO_CACHE);
+      const hit = await c.match("audio/manifest.json");
+      if (hit) manifest = await hit.json();
+    } catch (_) { /* none */ }
+  }
+  if (manifest) {
+    try { (await caches.open(AUDIO_CACHE)).put("audio/manifest.json", new Response(JSON.stringify(manifest))); } catch (_) { /* fine */ }
+  }
+  return manifest;
+}
+export const recordingsUploaded = () => !!manifest;
+export function setUseRecorded(on) { useRecorded = on; }
+export const usingRecorded = () => !!manifest && useRecorded;
+
+// The address of a sentence's recording, or null if there isn't one.
+export function recordingUrl(section, name) {
+  if (!usingRecorded() || !name) return null;
+  const s = manifest.sections && manifest.sections[section];
+  return s ? `audio/${s.folder}/${name}.mp3` : null;
+}
+
+async function getBytes(url) {
+  let c = null;
+  try { c = await caches.open(AUDIO_CACHE); } catch (_) { /* no cache storage */ }
+  if (c) {
+    const hit = await c.match(url);
+    if (hit) return hit.arrayBuffer();
+  }
+  const r = await fetch(url);
+  if (!r.ok) throw new Error("missing " + url);
+  if (c) c.put(url, r.clone()).catch(() => {});
+  return r.arrayBuffer();
+}
+
+function decode(url) {
+  if (!decoded.has(url)) {
+    unlockSounds();
+    const p = getBytes(url).then((buf) => new Promise((res, rej) => ctx.decodeAudioData(buf, res, rej)));
+    p.catch(() => decoded.delete(url));
+    decoded.set(url, p);
+    while (decoded.size > 6) decoded.delete(decoded.keys().next().value);
+  }
+  return decoded.get(url);
+}
+
+// Get the next sentence ready while this one plays.
+export function preloadRecording(url) { if (url && ctx) decode(url).catch(() => {}); }
+
+function stopRecording() {
+  const p = playing;
+  playing = null;
+  if (p) {
+    try { p.src.onended = null; p.src.stop(); } catch (_) { /* already stopped */ }
+    p.resolve("cancelled");
+  }
+}
+
+// Play one sentence's recording. Resolves "ended", "cancelled", or "failed" (no file / can't play).
+export async function playRecording(url) {
+  stopRecording();
+  if (synth && (synth.speaking || synth.pending)) synth.cancel();
+  const gen = ++recGen;
+  let buf;
+  try {
+    if (!ctx) unlockSounds();
+    if (!ctx) return "failed";
+    if (ctx.state === "suspended") await ctx.resume();
+    buf = await decode(url);
+  } catch (_) { return gen === recGen ? "failed" : "cancelled"; }
+  if (gen !== recGen) return "cancelled";
+  return new Promise((resolve) => {
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    const me = { src, resolve };
+    src.onended = () => { if (playing === me) { playing = null; resolve("ended"); } };
+    playing = me;
+    // the stand-in for "current" so stopSpeaking() cancels this too
+    current = { __resolve: () => stopRecording() };
+    src.start();
+  });
+}
+
+// Say a sentence: the recording if there is one, otherwise the device's voice.
+export async function narrate(text, url) {
+  if (url) {
+    const how = await playRecording(url);
+    if (how !== "failed") return how;
+  }
+  return speak(text);
+}
+
+// Download a section's recordings in the background (for offline use).
+// names: the recording names; onProgress(done, total).
+const saving = new Map();
+export function saveSection(section, names, onProgress) {
+  if (!usingRecorded() || !(manifest.sections || {})[section]) return Promise.resolve(false);
+  if (saving.has(section)) return saving.get(section);
+  const job = (async () => {
+    const c = await caches.open(AUDIO_CACHE);
+    const urls = [...new Set(names)].map((n) => recordingUrl(section, n));
+    const have = new Set((await c.keys()).map((r) => new URL(r.url).href));
+    const todo = urls.filter((u) => !have.has(new URL(u, location.href).href));
+    let done = urls.length - todo.length;
+    if (onProgress) onProgress(done, urls.length);
+    let i = 0, failed = 0;
+    const worker = async () => {
+      while (i < todo.length) {
+        const u = todo[i++];
+        try {
+          const r = await fetch(u);
+          if (r.ok) await c.put(u, r); else failed++;
+        } catch (_) { failed++; }
+        done++;
+        if (onProgress && (done % 20 === 0 || done === urls.length)) onProgress(done, urls.length);
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    return failed === 0;
+  })().finally(() => saving.delete(section));
+  saving.set(section, job);
+  return job;
+}
+
+// How many of a section's recordings are saved on this device.
+export async function savedCount(section) {
+  if (!usingRecorded()) return 0;
+  const s = (manifest.sections || {})[section];
+  if (!s) return 0;
+  try {
+    const c = await caches.open(AUDIO_CACHE);
+    return (await c.keys()).filter((r) => r.url.includes(`/audio/${s.folder}/`)).length;
+  } catch (_) { return 0; }
+}
+export const sectionFileCount = (section) => (manifest && manifest.sections && manifest.sections[section] || {}).files || 0;
+
+// Saved recordings per section folder, e.g. {"2_1": 812, ...} (one look at the cache).
+export async function savedCounts() {
+  const out = {};
+  if (!usingRecorded()) return out;
+  try {
+    const c = await caches.open(AUDIO_CACHE);
+    for (const r of await c.keys()) {
+      const m = /\/audio\/([^/]+)\/[^/]+\.mp3$/.exec(new URL(r.url).pathname);
+      if (m) out[m[1]] = (out[m[1]] || 0) + 1;
+    }
+  } catch (_) { /* no cache */ }
+  return out;
+}
+export const sectionFolder = (section) => (manifest && manifest.sections && manifest.sections[section] || {}).folder;
